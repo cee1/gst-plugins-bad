@@ -1864,7 +1864,7 @@ scan_codecs (GstPlugin * plugin)
             && !accepted_color_formats (gst_codec_type, is_encoder)) {
           GST_ERROR ("Codec has unknown color formats, ignoring");
           valid_codec = FALSE;
-          g_assert_not_reached ();
+          /* g_assert_not_reached (); */
           goto next_supported_type;
         }
       }
