@@ -63,8 +63,6 @@ struct _GstAmcVideoEnc
   guint bitrate;
   guint i_frame_int;
 
-  guint8 *codec_data;
-  gsize codec_data_size;
   /* TRUE if the component is configured and saw
    * the first buffer */
   gboolean started;

@@ -528,14 +528,14 @@ create_amc_format (GstAmcVideoEnc * encoder, GstVideoCodecState * input_state,
 
     /* FIXME: Set to any value in AVCProfile* leads to
      * codec configuration fail */
-    //gst_amc_format_set_int (format, amc_profile.key, 0x40);
+    /* gst_amc_format_set_int (format, amc_profile.key, 0x40); */
   }
 
   if (level_string) {
     if (amc_level.id == -1)
       goto unsupported_level;
 
-    //gst_amc_format_set_int (format, amc_level.key, amc_level.id);
+    /* gst_amc_format_set_int (format, amc_level.key, amc_level.id); */
   }
 
   if (encoder->i_frame_int)
@@ -544,10 +544,6 @@ create_amc_format (GstAmcVideoEnc * encoder, GstVideoCodecState * input_state,
   if (info->fps_d)
     gst_amc_format_set_float (format, "frame-rate",
         ((gfloat) info->fps_n) / info->fps_d);
-
-  if (encoder->codec_data)
-    gst_amc_format_set_buffer (format, "csd-0", encoder->codec_data,
-        encoder->codec_data_size);
 
   encoder->format = info->finfo->format;
   encoder->height = info->height;
@@ -1555,8 +1551,6 @@ gst_amc_video_enc_stop (GstVideoEncoder * encoder)
   self->draining = FALSE;
   g_cond_broadcast (&self->drain_cond);
   g_mutex_unlock (&self->drain_lock);
-  g_free (self->codec_data);
-  self->codec_data_size = 0;
   if (self->input_state)
     gst_video_codec_state_unref (self->input_state);
   self->input_state = NULL;
@@ -1580,8 +1574,6 @@ gst_amc_video_enc_set_format (GstVideoEncoder * encoder,
   gboolean is_format_change = FALSE;
   gboolean needs_disable = FALSE;
   gchar *format_string;
-  guint8 *codec_data = NULL;
-  gsize codec_data_size = 0;
   gboolean r = FALSE;
 
   self = GST_AMC_VIDEO_ENC (encoder);
@@ -1593,21 +1585,6 @@ gst_amc_video_enc_set_format (GstVideoEncoder * encoder,
    */
   is_format_change |= self->width != state->info.width;
   is_format_change |= self->height != state->info.height;
-  if (state->codec_data) {
-    GstMapInfo cminfo;
-
-    gst_buffer_map (state->codec_data, &cminfo, GST_MAP_READ);
-    codec_data = g_memdup (cminfo.data, cminfo.size);
-    codec_data_size = cminfo.size;
-
-    is_format_change |= (!self->codec_data
-        || self->codec_data_size != codec_data_size
-        || memcmp (self->codec_data, codec_data, codec_data_size) != 0);
-    gst_buffer_unmap (state->codec_data, &cminfo);
-  } else if (self->codec_data) {
-    is_format_change |= TRUE;
-  }
-
   needs_disable = self->started;
 
   /* If the component is not started and a real format change happens
@@ -1615,9 +1592,6 @@ gst_amc_video_enc_set_format (GstVideoEncoder * encoder,
    * happened we can just exit here.
    */
   if (needs_disable && !is_format_change) {
-    g_free (codec_data);
-    codec_data = NULL;
-    codec_data_size = 0;
 
     /* Framerate or something minor changed */
     if (self->input_state)
@@ -1647,10 +1621,6 @@ gst_amc_video_enc_set_format (GstVideoEncoder * encoder,
   if (self->input_state)
     gst_video_codec_state_unref (self->input_state);
   self->input_state = NULL;
-
-  g_free (self->codec_data);
-  self->codec_data = codec_data;
-  self->codec_data_size = codec_data_size;
 
   GST_DEBUG_OBJECT (self, "picking an output format ...");
   allowed_caps = gst_pad_get_allowed_caps (GST_VIDEO_ENCODER_SRC_PAD (encoder));
