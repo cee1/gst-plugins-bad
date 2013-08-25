@@ -1518,11 +1518,6 @@ gst_amc_video_enc_start (GstVideoEncoder * encoder)
   self->started = FALSE;
   self->flushing = TRUE;
 
-  if (self->first_set_format) {
-    gst_amc_format_free (self->first_set_format);
-    self->first_set_format = NULL;
-  }
-
   return TRUE;
 }
 
