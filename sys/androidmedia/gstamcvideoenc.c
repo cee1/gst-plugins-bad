@@ -822,8 +822,8 @@ gst_amc_video_enc_class_init (GstAmcVideoEncClass * klass)
           G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
 
   g_object_class_install_property (gobject_class, PROP_I_FRAME_INTERVAL,
-      g_param_spec_uint ("i-frame-int", "I-frame interval",
-          "The frequency of I frames expressed in secs between I frames (0 for automatic)",
+      g_param_spec_uint ("i-frame-interval", "I-frame interval",
+          "The frequency of I frames expressed in seconds between I frames (0 for automatic)",
           0, G_MAXINT, I_FRAME_INTERVAL_DEFAULT,
           G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
 }
