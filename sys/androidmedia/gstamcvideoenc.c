@@ -1065,25 +1065,21 @@ gst_amc_video_enc_set_src_caps (GstAmcVideoEnc * self, GstAmcFormat * format)
  */
 static gboolean
 gst_amc_video_enc_fill_buffer (GstAmcVideoEnc * self, GstBuffer * inbuf,
-    GstBuffer ** out_tmp, GstAmcBuffer * outbuf,
-    const GstAmcBufferInfo * buffer_info)
+    GstAmcBuffer * outbuf, const GstAmcBufferInfo * buffer_info)
 {
   GstVideoCodecState *input_state = self->input_state;
   /* The fill_buffer runs in the same thread as set_format?
    * then we can use state->info safely */
   GstVideoInfo *info = &input_state->info;
-  GstMapInfo tmp_minfo;
-  GstBuffer *tmp;
-  gboolean need_tmp_buffer;
   gpointer dest_data;
   gboolean ret = FALSE;
 
-  need_tmp_buffer = buffer_info->size < self->buffer_size;
+  if (buffer_info->size < self->buffer_size)
+    return FALSE;
 
   /* Same video format */
   if (gst_buffer_get_size (inbuf) == self->buffer_size) {
     GST_DEBUG_OBJECT (self, "Buffer sizes equal, doing fast copy");
-    tmp = need_tmp_buffer ? gst_object_ref (inbuf) : NULL;
     gst_buffer_extract (inbuf, 0, outbuf->data + buffer_info->offset,
         self->buffer_size);
 
@@ -1096,14 +1092,7 @@ gst_amc_video_enc_fill_buffer (GstAmcVideoEnc * self, GstBuffer * inbuf,
       "Sizes not equal (%d vs %d), doing slow line-by-line copying",
       gst_buffer_get_size (inbuf), self->buffer_size);
 
-  if (need_tmp_buffer) {
-    tmp = gst_buffer_new_allocate (NULL, self->buffer_size, NULL);
-    gst_buffer_map (tmp, &tmp_minfo, GST_MAP_READWRITE);
-    dest_data = tmp_minfo.data;
-  } else {
-    tmp = NULL;
-    dest_data = outbuf->data + buffer_info->offset;
-  }
+  dest_data = outbuf->data + buffer_info->offset;
 
   /* Different video format, try to convert */
   switch (self->format) {
@@ -1208,21 +1197,7 @@ gst_amc_video_enc_fill_buffer (GstAmcVideoEnc * self, GstBuffer * inbuf,
       break;
   }
 
-  if (need_tmp_buffer)
-    orc_memcpy (outbuf->data + buffer_info->offset, tmp_minfo.data,
-        buffer_info->size);
-
 done:
-  if (need_tmp_buffer)
-    gst_buffer_unmap (tmp, &tmp_minfo);
-
-  if (!ret && tmp) {
-    gst_object_unref (tmp);
-    tmp = NULL;
-  }
-
-  *out_tmp = tmp;
-
   return ret;
 }
 
@@ -1735,10 +1710,9 @@ gst_amc_video_enc_handle_frame (GstVideoEncoder * encoder,
   GstAmcVideoEnc *self;
   gint idx;
   GstAmcBuffer *buf;
-  GstBuffer *tmp = NULL;
   GstAmcBufferInfo buffer_info;
-  guint offset = 0;
   GstClockTime timestamp, duration, timestamp_offset = 0;
+  BufferIdentification *id;
 
   self = GST_AMC_VIDEO_ENC (encoder);
 
@@ -1765,100 +1739,81 @@ gst_amc_video_enc_handle_frame (GstVideoEncoder * encoder,
   timestamp = frame->pts;
   duration = frame->duration;
 
-  while (offset < gst_buffer_get_size (frame->input_buffer)) {
-    /* Make sure to release the base class stream lock, otherwise
-     * _loop() can't call _finish_frame() and we might block forever
-     * because no input buffers are released */
-    GST_VIDEO_ENCODER_STREAM_UNLOCK (self);
-    /* Wait at most 100ms here, some codecs don't fail dequeueing if
-     * the codec is flushing, causing deadlocks during shutdown */
-    idx = gst_amc_codec_dequeue_input_buffer (self->codec, 100000);
-    GST_VIDEO_ENCODER_STREAM_LOCK (self);
+again:
+  /* Make sure to release the base class stream lock, otherwise
+   * _loop() can't call _finish_frame() and we might block forever
+   * because no input buffers are released */
+  GST_VIDEO_ENCODER_STREAM_UNLOCK (self);
+  /* Wait at most 100ms here, some codecs don't fail dequeueing if
+   * the codec is flushing, causing deadlocks during shutdown */
+  idx = gst_amc_codec_dequeue_input_buffer (self->codec, 100000);
+  GST_VIDEO_ENCODER_STREAM_LOCK (self);
 
-    if (idx < 0) {
-      if (self->flushing)
-        goto flushing;
-      switch (idx) {
-        case INFO_TRY_AGAIN_LATER:
-          GST_DEBUG_OBJECT (self, "Dequeueing input buffer timed out");
-          continue;             /* next try */
-          break;
-        case G_MININT:
-          GST_ERROR_OBJECT (self, "Failed to dequeue input buffer");
-          goto dequeue_error;
-        default:
-          g_assert_not_reached ();
-          break;
-      }
-
-      continue;
-    }
-
-    if (idx >= self->n_input_buffers)
-      goto invalid_buffer_index;
-
+  if (idx < 0) {
     if (self->flushing)
       goto flushing;
-
-    if (self->downstream_flow_ret != GST_FLOW_OK) {
-      memset (&buffer_info, 0, sizeof (buffer_info));
-      gst_amc_codec_queue_input_buffer (self->codec, idx, &buffer_info);
-      goto downstream_error;
+    switch (idx) {
+      case INFO_TRY_AGAIN_LATER:
+        GST_DEBUG_OBJECT (self, "Dequeueing input buffer timed out");
+        goto again;             /* next try */
+        break;
+      case G_MININT:
+        GST_ERROR_OBJECT (self, "Failed to dequeue input buffer");
+        goto dequeue_error;
+      default:
+        g_assert_not_reached ();
+        break;
     }
 
-    /* Now handle the frame */
-
-    /* Copy the buffer content in chunks of size as requested
-     * by the port */
-    buf = &self->input_buffers[idx];
-
-    memset (&buffer_info, 0, sizeof (buffer_info));
-    buffer_info.offset = 0;
-    buffer_info.size = MIN (self->buffer_size - offset, buf->size);
-
-    if (offset == 0) {
-      if (!gst_amc_video_enc_fill_buffer (self, frame->input_buffer, &tmp, buf,
-              &buffer_info))
-        goto buffer_fill_error; /* no way to release @buf ? */
-    } else
-      gst_buffer_extract (tmp, offset, buf->data, buffer_info.size);
-
-    /* Interpolate timestamps if we're passing the buffer
-     * in multiple chunks */
-    if (offset != 0 && duration != GST_CLOCK_TIME_NONE) {
-      timestamp_offset =
-          gst_util_uint64_scale (offset, duration,
-          gst_buffer_get_size (frame->input_buffer));
-    }
-
-    if (timestamp != GST_CLOCK_TIME_NONE) {
-      buffer_info.presentation_time_us =
-          gst_util_uint64_scale (timestamp + timestamp_offset, 1, GST_USECOND);
-      self->last_upstream_ts = timestamp + timestamp_offset;
-    }
-    if (duration != GST_CLOCK_TIME_NONE)
-      self->last_upstream_ts += duration;
-
-    if (offset == 0) {
-      BufferIdentification *id =
-          buffer_identification_new (timestamp + timestamp_offset);
-      if (GST_VIDEO_CODEC_FRAME_IS_SYNC_POINT (frame))
-        buffer_info.flags |= BUFFER_FLAG_SYNC_FRAME;
-      gst_video_codec_frame_set_user_data (frame, id,
-          (GDestroyNotify) buffer_identification_free);
-    }
-
-    offset += buffer_info.size;
-    GST_DEBUG_OBJECT (self,
-        "Queueing buffer %d: size %d time %" G_GINT64_FORMAT " flags 0x%08x",
-        idx, buffer_info.size, buffer_info.presentation_time_us,
-        buffer_info.flags);
-    if (!gst_amc_codec_queue_input_buffer (self->codec, idx, &buffer_info))
-      goto queue_error;
+    goto again;
   }
 
-  if (tmp)
-    gst_object_unref (tmp);
+  if (idx >= self->n_input_buffers)
+    goto invalid_buffer_index;
+
+  if (self->flushing)
+    goto flushing;
+
+  if (self->downstream_flow_ret != GST_FLOW_OK) {
+    memset (&buffer_info, 0, sizeof (buffer_info));
+    gst_amc_codec_queue_input_buffer (self->codec, idx, &buffer_info);
+    goto downstream_error;
+  }
+
+  /* Now handle the frame */
+
+  /* Copy the buffer content in chunks of size as requested
+   * by the port */
+  buf = &self->input_buffers[idx];
+
+  memset (&buffer_info, 0, sizeof (buffer_info));
+  buffer_info.offset = 0;
+  buffer_info.size = MIN (self->buffer_size, buf->size);
+
+  if (!gst_amc_video_enc_fill_buffer (self, frame->input_buffer, buf,
+          &buffer_info))
+    goto buffer_fill_error;     /* no way to release @buf ? */
+
+  if (timestamp != GST_CLOCK_TIME_NONE) {
+    buffer_info.presentation_time_us =
+        gst_util_uint64_scale (timestamp + timestamp_offset, 1, GST_USECOND);
+    self->last_upstream_ts = timestamp + timestamp_offset;
+  }
+  if (duration != GST_CLOCK_TIME_NONE)
+    self->last_upstream_ts += duration;
+
+  id = buffer_identification_new (timestamp + timestamp_offset);
+  if (GST_VIDEO_CODEC_FRAME_IS_SYNC_POINT (frame))
+    buffer_info.flags |= BUFFER_FLAG_SYNC_FRAME;
+  gst_video_codec_frame_set_user_data (frame, id,
+      (GDestroyNotify) buffer_identification_free);
+
+  GST_DEBUG_OBJECT (self,
+      "Queueing buffer %d: size %d time %" G_GINT64_FORMAT " flags 0x%08x",
+      idx, buffer_info.size, buffer_info.presentation_time_us,
+      buffer_info.flags);
+  if (!gst_amc_codec_queue_input_buffer (self->codec, idx, &buffer_info))
+    goto queue_error;
 
   gst_video_codec_frame_unref (frame);
 
@@ -1869,8 +1824,6 @@ downstream_error:
     GST_ERROR_OBJECT (self, "Downstream returned %s",
         gst_flow_get_name (self->downstream_flow_ret));
 
-    if (tmp)
-      gst_object_unref (tmp);
     gst_video_codec_frame_unref (frame);
     return self->downstream_flow_ret;
   }
@@ -1878,15 +1831,14 @@ invalid_buffer_index:
   {
     GST_ELEMENT_ERROR (self, LIBRARY, FAILED, (NULL),
         ("Invalid input buffer index %d of %d", idx, self->n_input_buffers));
-    if (tmp)
-      gst_object_unref (tmp);
     gst_video_codec_frame_unref (frame);
     return GST_FLOW_ERROR;
   }
 buffer_fill_error:
   {
     GST_ELEMENT_ERROR (self, RESOURCE, WRITE, (NULL),
-        ("Failed to write input into the OpenMAX buffer"));
+        ("Failed to write input into the OpenMAX buffer(write %dB to a %dB buffer)",
+            self->buffer_size, buf->size));
     gst_video_codec_frame_unref (frame);
     return GST_FLOW_ERROR;
   }
@@ -1894,8 +1846,6 @@ dequeue_error:
   {
     GST_ELEMENT_ERROR (self, LIBRARY, FAILED, (NULL),
         ("Failed to dequeue input buffer"));
-    if (tmp)
-      gst_object_unref (tmp);
     gst_video_codec_frame_unref (frame);
     return GST_FLOW_ERROR;
   }
@@ -1903,16 +1853,12 @@ queue_error:
   {
     GST_ELEMENT_ERROR (self, LIBRARY, FAILED, (NULL),
         ("Failed to queue input buffer"));
-    if (tmp)
-      gst_object_unref (tmp);
     gst_video_codec_frame_unref (frame);
     return GST_FLOW_ERROR;
   }
 flushing:
   {
     GST_DEBUG_OBJECT (self, "Flushing -- returning FLUSHING");
-    if (tmp)
-      gst_object_unref (tmp);
     gst_video_codec_frame_unref (frame);
     return GST_FLOW_FLUSHING;
   }
