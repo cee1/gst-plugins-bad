@@ -597,6 +597,7 @@ caps_from_amc_format (GstAmcFormat * amc_format)
   gint width, height;
   gint amc_profile, amc_level;
   gfloat frame_rate = 0.0;
+  gint fraction_n, fraction_d;
 
   if (!gst_amc_format_get_string (amc_format, "mime", &mime)) {
     GST_ERROR ("Failed to get 'mime'");
@@ -612,6 +613,7 @@ caps_from_amc_format (GstAmcFormat * amc_format)
   }
 
   gst_amc_format_get_float (amc_format, "frame-rate", &frame_rate);
+  gst_util_double_to_fraction (frame_rate, &fraction_n, &fraction_d);
 
   if (strcmp (mime, "video/mp4v-es") == 0) {
     const gchar *profile_string, *level_string;
@@ -672,7 +674,7 @@ caps_from_amc_format (GstAmcFormat * amc_format)
 
   gst_caps_set_simple (caps, "width", G_TYPE_INT, width,
       "height", G_TYPE_INT, height,
-      "framerate", G_TYPE_FLOAT, frame_rate, NULL);
+      "framerate", GST_TYPE_FRACTION, fraction_n, fraction_d, NULL);
 
   g_free (mime);
   return caps;
