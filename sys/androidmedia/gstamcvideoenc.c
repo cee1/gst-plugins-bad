@@ -1239,7 +1239,8 @@ gst_amc_video_enc_handle_output_frame (GstAmcVideoEnc * self,
     GstPad *srcpad;
 
     srcpad = GST_VIDEO_ENCODER_SRC_PAD (encoder);
-    out_buf = gst_buffer_new_allocate (NULL, buffer_info->size, NULL);
+    out_buf =
+        gst_video_encoder_allocate_output_buffer (encoder, buffer_info->size);
     gst_buffer_fill (out_buf, 0, buf->data + buffer_info->offset,
         buffer_info->size);
 
