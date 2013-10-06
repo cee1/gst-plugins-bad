@@ -1054,8 +1054,10 @@ gst_amc_video_enc_set_src_caps (GstAmcVideoEnc * self, GstAmcFormat * format)
    */
   output_state = gst_video_encoder_set_output_state (GST_VIDEO_ENCODER (self),
       caps, self->input_state);
-
   gst_video_codec_state_unref (output_state);
+
+  if (!gst_video_encoder_negotiate (GST_VIDEO_ENCODER (self)))
+    return FALSE;
 
   return TRUE;
 }
@@ -1209,6 +1211,53 @@ gst_amc_video_enc_handle_output_frame (GstAmcVideoEnc * self,
   GstFlowReturn flow_ret = GST_FLOW_OK;
   GstVideoEncoder *encoder = GST_VIDEO_ENCODER_CAST (self);
 
+  /* The BUFFER_FLAG_CODEC_CONFIG logic is borrowed from
+   * gst-omx. see *_handle_output_frame in
+   * gstomxvideoenc.c and gstomxh264enc.c */
+  if ((buffer_info->flags & BUFFER_FLAG_CODEC_CONFIG)
+      && buffer_info->size > 0) {
+    GstStructure *s;
+    GstVideoCodecState *state;
+
+    state = gst_video_encoder_get_output_state (encoder);
+    s = gst_caps_get_structure (state->caps, 0);
+    if (!strcmp (gst_structure_get_name (s), "video/x-h264")) {
+      gst_video_codec_state_unref (state);
+
+      if (buffer_info->size > 4 &&
+          GST_READ_UINT32_BE (buf->data + buffer_info->offset) == 0x00000001) {
+        GList *l = NULL;
+        GstBuffer *hdrs;
+
+        GST_DEBUG_OBJECT (self, "got codecconfig in byte-stream format");
+
+        hdrs = gst_buffer_new_and_alloc (buffer_info->size);
+        gst_buffer_fill (hdrs, 0, buf->data + buffer_info->offset,
+            buffer_info->size);
+
+        l = g_list_append (l, hdrs);
+        gst_video_encoder_set_headers (encoder, l);
+      }
+    } else {
+      GstBuffer *codec_data;
+
+      GST_DEBUG_OBJECT (self, "Handling codec data");
+
+      codec_data = gst_buffer_new_and_alloc (buffer_info->size);
+      gst_buffer_fill (codec_data, 0, buf->data + buffer_info->offset,
+          buffer_info->size);
+      state->codec_data = codec_data;
+      gst_video_codec_state_unref (state);
+
+      if (!gst_video_encoder_negotiate (encoder)) {
+        gst_video_codec_frame_unref (frame);
+        return GST_FLOW_NOT_NEGOTIATED;
+      }
+
+      return GST_FLOW_OK;
+    }
+  }
+
   if (buffer_info->size > 0) {
     GstBuffer *out_buf;
     GstPad *srcpad;
@@ -1225,9 +1274,7 @@ gst_amc_video_enc_handle_output_frame (GstAmcVideoEnc * self,
 
     if (frame) {
       frame->output_buffer = out_buf;
-      flow_ret =
-          gst_video_encoder_finish_frame (GST_VIDEO_ENCODER (self), frame);
-      frame = NULL;
+      flow_ret = gst_video_encoder_finish_frame (encoder, frame);
     } else {
       /* This sometimes happens at EOS or if the input is not properly framed,
        * let's handle it gracefully by allocating a new buffer for the current
@@ -1237,10 +1284,9 @@ gst_amc_video_enc_handle_output_frame (GstAmcVideoEnc * self,
       GST_ERROR_OBJECT (self, "No corresponding frame found");
       flow_ret = gst_pad_push (srcpad, out_buf);
     }
+  } else if (frame) {
+    flow_ret = gst_video_encoder_finish_frame (encoder, frame);
   }
-
-  if (frame)
-    gst_video_encoder_finish_frame (GST_VIDEO_ENCODER (encoder), frame);
 
   return flow_ret;
 }
