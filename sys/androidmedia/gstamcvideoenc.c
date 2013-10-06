@@ -1312,24 +1312,26 @@ retry:
   GST_VIDEO_ENCODER_STREAM_LOCK (self);
   /*} */
 
-  if (idx < 0 || self->first_set_format) {
+  if (idx < 0 || self->amc_format) {
     if (self->flushing || self->downstream_flow_ret == GST_FLOW_FLUSHING)
       goto flushing;
 
-    if (self->first_set_format || idx == INFO_OUTPUT_FORMAT_CHANGED) {
+    /* The comments from https://android.googlesource.com/platform/cts/+/android-4.3_r3.1/tests/tests/media/src/android/media/cts/EncodeDecodeTest.java
+     * line 539 says INFO_OUTPUT_FORMAT_CHANGED is not expected for an encoder
+     */
+    if (self->amc_format || idx == INFO_OUTPUT_FORMAT_CHANGED) {
       GstAmcFormat *format;
       gchar *format_string;
 
       GST_DEBUG_OBJECT (self, "Output format has changed");
 
       format = (idx == INFO_OUTPUT_FORMAT_CHANGED) ?
-          gst_amc_codec_get_output_format (self->codec) :
-          self->first_set_format;
+          gst_amc_codec_get_output_format (self->codec) : self->amc_format;
 
-      if (self->first_set_format) {
-        if (format != self->first_set_format)
-          gst_amc_format_free (self->first_set_format);
-        self->first_set_format = NULL;
+      if (self->amc_format) {
+        if (format != self->amc_format)
+          gst_amc_format_free (self->amc_format);
+        self->amc_format = NULL;
       }
 
       if (!format)
@@ -1573,9 +1575,9 @@ gst_amc_video_enc_stop (GstVideoEncoder * encoder)
     gst_video_codec_state_unref (self->input_state);
   self->input_state = NULL;
 
-  if (self->first_set_format) {
-    gst_amc_format_free (self->first_set_format);
-    self->first_set_format = NULL;
+  if (self->amc_format) {
+    gst_amc_format_free (self->amc_format);
+    self->amc_format = NULL;
   }
 
   GST_DEBUG_OBJECT (self, "Stopped encoder");
@@ -1680,14 +1682,8 @@ gst_amc_video_enc_set_format (GstVideoEncoder * encoder,
     goto quit;
   }
 
-  /* 
-   * mediacodec don't report the first output format as INFO_OUTPUT_FORMAT_CHANGED
-   *   for encoders? Take care of it.
-   */
-  if (!self->started) {
-    self->first_set_format = format;
-    format = NULL;
-  }
+  self->amc_format = format;
+  format = NULL;
 
   self->input_state = gst_video_codec_state_ref (state);
 
