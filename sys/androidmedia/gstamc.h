@@ -121,6 +121,8 @@ void gst_amc_format_set_buffer (GstAmcFormat *format, const gchar *key, guint8 *
 
 GstVideoFormat gst_amc_color_format_to_video_format (gint color_format);
 gint gst_amc_video_format_to_color_format (GstVideoFormat video_format);
+GstVideoFormat gst_amc_color_format_to_video_format_hack (const GstAmcCodecInfo *codec_info, gint color_format);
+gint gst_amc_video_format_to_color_format_hack (const GstAmcCodecInfo * codec_info, GstVideoFormat video_format);
 
 const gchar * gst_amc_avc_profile_to_string (gint profile, const gchar **alternative);
 gint gst_amc_avc_profile_from_string (const gchar *profile);
@@ -139,6 +141,8 @@ gint gst_amc_aac_profile_from_string (const gchar *profile);
 
 gboolean gst_amc_audio_channel_mask_to_positions (guint32 channel_mask, gint channels, GstAudioChannelPosition *pos);
 guint32 gst_amc_audio_channel_mask_from_positions (GstAudioChannelPosition *positions, gint channels);
+void gst_amc_codec_info_to_caps (const GstAmcCodecInfo * codec_info, GstCaps **sink_caps, GstCaps **src_caps);
+
 
 G_END_DECLS
 
