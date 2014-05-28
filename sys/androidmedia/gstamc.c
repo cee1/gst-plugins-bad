@@ -2415,24 +2415,31 @@ gst_amc_color_format_copy (GstAmcColorFormatInfo * cinfo,
     dest = &cptr;
   }
 
-  /* Same video format */
-  if (cbuffer_info->size == gst_buffer_get_size (vbuffer)) {
-    GstMapInfo minfo;
+  if (cinfo->color_format ==
+      COLOR_QCOM_FormatYUV420PackedSemiPlanar64x32Tile2m8ka
+      || cinfo->color_format == COLOR_MTK_FormatYUV420PackedSemiPlanar16x32Tile)
+    GST_DEBUG ("Doing tile-by-tile copying(size of color buffer is %dB)",
+        cbuffer_info->size);
+  else {
+    /* Same video format */
+    if (cbuffer_info->size == gst_buffer_get_size (vbuffer)) {
+      GstMapInfo minfo;
 
-    GST_DEBUG ("Buffer sizes equal, doing fast copy");
-    gst_buffer_map (vbuffer, &minfo, GST_MAP_WRITE);
+      GST_DEBUG ("Buffer sizes equal, doing fast copy");
+      gst_buffer_map (vbuffer, &minfo, GST_MAP_WRITE);
 
-    cptr = cbuffer->data + cbuffer_info->offset;
-    vptr = minfo.data;
-    orc_memcpy (*dest, *src, cbuffer_info->size);
+      cptr = cbuffer->data + cbuffer_info->offset;
+      vptr = minfo.data;
+      orc_memcpy (*dest, *src, cbuffer_info->size);
 
-    gst_buffer_unmap (vbuffer, &minfo);
-    ret = TRUE;
-    goto done;
+      gst_buffer_unmap (vbuffer, &minfo);
+      ret = TRUE;
+      goto done;
+    }
+
+    GST_DEBUG ("Sizes not equal (%d vs %d), doing slow line-by-line copying",
+        cbuffer_info->size, gst_buffer_get_size (vbuffer));
   }
-
-  GST_DEBUG ("Sizes not equal (%d vs %d), doing slow line-by-line copying",
-      cbuffer_info->size, gst_buffer_get_size (vbuffer));
 
   /* Different video format, try to convert */
   switch (cinfo->color_format) {
