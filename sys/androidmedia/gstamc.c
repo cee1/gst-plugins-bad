@@ -2365,8 +2365,13 @@ gst_amc_color_format_info_set (GstAmcColorFormatInfo * color_format_info,
       const size_t tile_w = (width - 1) / TILE_WIDTH + 1;
       const size_t tile_w_align = (tile_w + 1) & ~1;
       const size_t tile_h_luma = (height - 1) / TILE_HEIGHT + 1;
-      frame_size =
-          tile_pos (tile_w, tile_h_luma, tile_w_align, tile_h_luma) * TILE_SIZE;
+      size_t luma_size = tile_w_align * tile_h_luma * TILE_SIZE;
+      size_t chroma_size = luma_size / 2;
+
+      if ((luma_size % TILE_GROUP_SIZE) != 0)
+        luma_size = (((luma_size - 1) / TILE_GROUP_SIZE) + 1) * TILE_GROUP_SIZE;
+
+      frame_size = luma_size + chroma_size;
       break;
     }
     default:
