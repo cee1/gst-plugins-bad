@@ -2301,6 +2301,14 @@ gst_amc_color_format_info_set (GstAmcColorFormatInfo * color_format_info,
   if (color_format == COLOR_FormatYCbYCr) {
     if (strcmp (codec_info->name, "OMX.k3.video.decoder.avc") == 0)
       color_format = COLOR_FormatYUV420SemiPlanar;
+  } else if (color_format == COLOR_TI_FormatYUV420PackedSemiPlanarInterlaced) {
+    if (strcmp (codec_info->name, "OMX.MTK.VIDEO.DECODER.AVC") == 0) {
+      GST_INFO
+          ("OMX.mtk.video.decoder.avc: reported color format 'COLOR_TI_FormatYUV420PackedSemiPlanarInterlaced' "
+          "is actually another color format, just name it as COLOR_MTK_FormatYUV420PackedSemiPlanar16x32Tile "
+          "and take care of");
+      color_format = COLOR_MTK_FormatYUV420PackedSemiPlanar16x32Tile;
+    }
   }
 
   /* Samsung Galaxy S3 seems to report wrong strides.
@@ -2370,6 +2378,16 @@ gst_amc_color_format_info_set (GstAmcColorFormatInfo * color_format_info,
 
       if ((luma_size % TILE_GROUP_SIZE) != 0)
         luma_size = (((luma_size - 1) / TILE_GROUP_SIZE) + 1) * TILE_GROUP_SIZE;
+
+      frame_size = luma_size + chroma_size;
+      break;
+    }
+    case COLOR_MTK_FormatYUV420PackedSemiPlanar16x32Tile:{
+      /* 16 * 32 tile */
+      const size_t tile_w = (width - 1) / 16 + 1;
+      const size_t tile_h_luma = (height - 1) / 32 + 1;
+      size_t luma_size = tile_w * tile_h_luma * 16 * 32;
+      size_t chroma_size = luma_size / 2;
 
       frame_size = luma_size + chroma_size;
       break;
@@ -2670,7 +2688,90 @@ gst_amc_color_format_copy (GstAmcColorFormatInfo * cinfo,
       gst_video_frame_unmap (&vframe);
       ret = TRUE;
       break;
+    }
+    case COLOR_MTK_FormatYUV420PackedSemiPlanar16x32Tile:{
+#undef TILE_WIDTH
+#undef TILE_HEIGHT
+#undef TILE_SIZE
+#define TILE_WIDTH 16
+#define TILE_HEIGHT 32
+#define TILE_SIZE (TILE_WIDTH * TILE_HEIGHT)
 
+      GstVideoFrame vframe;
+      gint width = cinfo->width;
+      gint height = cinfo->height;
+      gint v_luma_stride, v_chroma_stride;
+      guint8 *cdata = cbuffer->data + cbuffer_info->offset;
+      guint8 *v_luma, *v_chroma;
+      gint y;
+      const size_t tile_w = (width - 1) / TILE_WIDTH + 1;
+      const size_t tile_h_luma = (height - 1) / TILE_HEIGHT + 1;
+      size_t luma_size = tile_w * tile_h_luma * TILE_SIZE;
+
+      gst_video_frame_map (&vframe, vinfo, vbuffer, GST_MAP_WRITE);
+      v_luma = GST_VIDEO_FRAME_PLANE_DATA (&vframe, 0);
+      v_chroma = GST_VIDEO_FRAME_PLANE_DATA (&vframe, 1);
+      v_luma_stride = GST_VIDEO_FRAME_COMP_STRIDE (&vframe, 0);
+      v_chroma_stride = GST_VIDEO_FRAME_COMP_STRIDE (&vframe, 1);
+
+      for (y = 0; y < tile_h_luma; y++) {
+        size_t row_width = width;
+        gint x;
+
+        for (x = 0; x < tile_w; x++) {
+          size_t tile_width = row_width;
+          size_t tile_height = height;
+          gint luma_idx;
+          gint chroma_idx;
+          /* luma source pointer for this tile */
+          uint8_t *c_luma = cdata + (x + y * tile_w) * TILE_SIZE;
+
+          /* chroma source pointer for this tile */
+          uint8_t *c_chroma =
+              cdata + luma_size + (x + y * tile_w) * TILE_SIZE / 2;
+
+          /* account for right columns */
+          if (tile_width > TILE_WIDTH)
+            tile_width = TILE_WIDTH;
+
+          /* account for bottom rows */
+          if (tile_height > TILE_HEIGHT)
+            tile_height = TILE_HEIGHT;
+
+          /* vptr luma memory index for this tile */
+          luma_idx = y * TILE_HEIGHT * v_luma_stride + x * TILE_WIDTH;
+
+          /* vptr chroma memory index for this tile */
+          /* XXX: remove divisions */
+          chroma_idx = y * TILE_HEIGHT / 2 * v_chroma_stride + x * TILE_WIDTH;
+
+          tile_height /= 2;     // we copy 2 luma lines at once
+          while (tile_height--) {
+            vptr = v_luma + luma_idx;
+            cptr = c_luma;
+            memcpy (*dest, *src, tile_width);
+            c_luma += TILE_WIDTH;
+            luma_idx += v_luma_stride;
+
+            vptr = v_luma + luma_idx;
+            cptr = c_luma;
+            memcpy (*dest, *src, tile_width);
+            c_luma += TILE_WIDTH;
+            luma_idx += v_luma_stride;
+
+            vptr = v_chroma + chroma_idx;
+            cptr = c_chroma;
+            memcpy (*dest, *src, tile_width);
+            c_chroma += TILE_WIDTH;
+            chroma_idx += v_chroma_stride;
+          }
+          row_width -= TILE_WIDTH;
+        }
+        height -= TILE_HEIGHT;
+      }
+      gst_video_frame_unmap (&vframe);
+      ret = TRUE;
+      break;
     }
     default:
       GST_ERROR ("Unsupported color format %d", cinfo->color_format);
